@@ -29,6 +29,7 @@
 #include <unistd.h>
 #include <math.h>
 #include <time.h>
+#include <xmmintrin.h>
 #include "particle.h"
 #include "main.h"
 #include "tools.h"
@@ -59,7 +60,7 @@ double Mtotal;
 int integrator_timestep_warning = 0;
 
 // Fast inverse factorial lookup table
-static const double invfactorial[] = {1., 1., 1./2., 1./6., 1./24., 1./120., 1./720., 1./5040., 1./40320., 1./362880., 1./3628800., 1./39916800., 1./479001600., 1./6227020800., 1./87178291200., 1./1307674368000., 1./20922789888000., 1./355687428096000., 1./6402373705728000., 1./121645100408832000., 1./2432902008176640000., 1./51090942171709440000., 1./1124000727777607680000., 1./25852016738884976640000., 1./620448401733239439360000., 1./15511210043330985984000000., 1./403291461126605635584000000., 1./10888869450418352160768000000., 1./304888344611713860501504000000., 1./8841761993739701954543616000000., 1./265252859812191058636308480000000., 1./8222838654177922817725562880000000., 1./263130836933693530167218012160000000., 1./8683317618811886495518194401280000000., 1./295232799039604140847618609643520000000.};
+static const double __attribute__((aligned (16))) invfactorial[] = {1., 1., 1./2., 1./6., 1./24., 1./120., 1./720., 1./5040., 1./40320., 1./362880., 1./3628800., 1./39916800., 1./479001600., 1./6227020800., 1./87178291200., 1./1307674368000., 1./20922789888000., 1./355687428096000., 1./6402373705728000., 1./121645100408832000., 1./2432902008176640000., 1./51090942171709440000., 1./1124000727777607680000., 1./25852016738884976640000., 1./620448401733239439360000., 1./15511210043330985984000000., 1./403291461126605635584000000., 1./10888869450418352160768000000., 1./304888344611713860501504000000., 1./8841761993739701954543616000000., 1./265252859812191058636308480000000., 1./8222838654177922817725562880000000., 1./263130836933693530167218012160000000., 1./8683317618811886495518194401280000000., 1./295232799039604140847618609643520000000.};
 
 //static double ipow(double base, unsigned int exp) {
 //	double result = 1;
@@ -78,16 +79,31 @@ static inline double fastabs(double x){
 
 static double c_n_series(unsigned const int n, double z){
 	z *= -1.0;
-	double c_n = invfactorial[n] + z*invfactorial[n+2]; 	// always calculate first two terms
+	//double c_n = invfactorial[n] + z*invfactorial[n+2]; 	// always calculate first two terms
+	__m128d m_pow =  _mm_set_pd(1.,z);
+	__m128d m_fac =  _mm_set_pd(invfactorial[n],invfactorial[n+2]); 	// always calculate first two terms
+	__m128d m_c_n =  _mm_mul_pd(m_pow,m_fac);
+	double __attribute__((aligned(16))) C[2];
+	_mm_store_pd(C,m_c_n);
+	double c_n = C[0] + C[1];
+	//double c_n=0;
 	double old_c_n;
-	double _pow = z*z;
 	int j=n+4;
+
+	double z2 = z*z;
+	__m128d m_z2   =  _mm_set_pd(z2,z2);
 	do{
+		m_pow = _mm_mul_pd(m_pow,m_z2);
 		old_c_n = c_n;
-		c_n += _pow*invfactorial[j];
-		_pow *= z;
-		j+=2;
-	}while(c_n!=old_c_n && j<n+26);				// Stop if new term smaller than machine precision
+		//c_n += _pow*invfactorial[j];
+		m_fac = _mm_set_pd(invfactorial[j],invfactorial[j+2]); 	
+		__m128d m_c_n_temp = _mm_mul_pd(m_pow,m_fac);
+		m_c_n = _mm_add_pd(m_c_n,m_c_n_temp);
+		_mm_store_pd(C,m_c_n);
+		c_n = C[0]+C[1];
+		//_pow *= z;
+		j+=4;
+	}while(c_n!=old_c_n && j<n+24);				// Stop if new term smaller than machine precision
 	return c_n;
 }
 
