@@ -61,7 +61,7 @@ double Mtotal;
 unsigned int integrator_timestep_warning = 0;
 
 // Fast inverse factorial lookup table
-static const double invfactorial[35] __attribute__((aligned (16))) = {1./24., 1./120., 1./720., 1./5040., 1./40320., 1./362880., 1./3628800., 1./39916800., 1./479001600., 1./6227020800., 1./87178291200., 1./1307674368000., 1./20922789888000., 1./355687428096000., 1./6402373705728000., 1./121645100408832000., 1./2432902008176640000., 1./51090942171709440000., 1./1124000727777607680000., 1./25852016738884976640000., 1./620448401733239439360000., 1./15511210043330985984000000., 1./403291461126605635584000000., 1./10888869450418352160768000000., 1./304888344611713860501504000000., 1./8841761993739701954543616000000., 1./265252859812191058636308480000000., 1./8222838654177922817725562880000000., 1./263130836933693530167218012160000000., 1./8683317618811886495518194401280000000., 1./295232799039604140847618609643520000000.};
+static const double invfactorial[35] __attribute__((__aligned__(16))) = {1./24., 1./120., 1./720., 1./5040., 1./40320., 1./362880., 1./3628800., 1./39916800., 1./479001600., 1./6227020800., 1./87178291200., 1./1307674368000., 1./20922789888000., 1./355687428096000., 1./6402373705728000., 1./121645100408832000., 1./2432902008176640000., 1./51090942171709440000., 1./1124000727777607680000., 1./25852016738884976640000., 1./620448401733239439360000., 1./15511210043330985984000000., 1./403291461126605635584000000., 1./10888869450418352160768000000., 1./304888344611713860501504000000., 1./8841761993739701954543616000000., 1./265252859812191058636308480000000., 1./8222838654177922817725562880000000., 1./263130836933693530167218012160000000., 1./8683317618811886495518194401280000000., 1./295232799039604140847618609643520000000.};
 
 //static double ipow(double base, unsigned int exp) {
 //	double result = 1;
@@ -78,25 +78,11 @@ static inline double fastabs(double x){
 	    return (x > 0.) ? x : -x;
 }
 
-static double c_n_series(unsigned int n, double z){
-	z *= -1.0;
-	double c_n = invfactorial[n] + z*invfactorial[n+2]; 	// always calculate first two terms
-	double old_c_n;
-	double _pow = z;
-	n+=4;
-	do{
-		old_c_n = c_n;
-		_pow *= z;
-		c_n += _pow*invfactorial[n];
-		n+=2;
-	}while(c_n!=old_c_n && n<35);				// Stop if new term smaller than machine precision
-	return c_n;
-}
-
 
 static void stumpff_cs(double *restrict cs, double z) {
 	if (z<0.1){
-		__m128d m_z   =  _mm_set1_pd(-z);
+		__m128d m_z   =  _mm_set1_pd(z);
+			m_z   =  _mm_xor_pd(m_z, _mm_set1_pd(-0.));
 		__m128d m_cn  =  _mm_load_pd(invfactorial);    
 		
 		__m128d m_fac =  _mm_load_pd(invfactorial+2);    
@@ -123,13 +109,29 @@ static void stumpff_cs(double *restrict cs, double z) {
 		        m_fac =  _mm_mul_pd(m_fac,m_pow);
 		        m_cn  =  _mm_add_pd(m_fac,m_cn);
 
+		        m_fac =  _mm_load_pd(invfactorial+12);    
+		        m_pow =  _mm_mul_pd(m_pow,m_z);
+		        m_fac =  _mm_mul_pd(m_fac,m_pow);
+		        m_cn  =  _mm_add_pd(m_fac,m_cn);
+
+		        m_fac =  _mm_load_pd(invfactorial+14);    
+		        m_pow =  _mm_mul_pd(m_pow,m_z);
+		        m_fac =  _mm_mul_pd(m_fac,m_pow);
+		        m_cn  =  _mm_add_pd(m_fac,m_cn);
+
+		        m_fac =  _mm_load_pd(invfactorial+16);    
+		        m_pow =  _mm_mul_pd(m_pow,m_z);
+		        m_fac =  _mm_mul_pd(m_fac,m_pow);
+		        m_cn  =  _mm_add_pd(m_fac,m_cn);
+
+		static const double f[4]  __attribute__((__aligned__(16)))= {0.5,1./6.,1.,1.};
 		_mm_store_pd(cs+4,m_cn);
 		m_cn    =  _mm_mul_pd(m_z,m_cn);
-		m_fac   =  _mm_set_pd(1./6.,0.5);
+		m_fac   =  _mm_load_pd(f);
 		m_cn    =  _mm_add_pd(m_fac,m_cn);
 		_mm_store_pd(cs+2,m_cn);
 		m_cn    =  _mm_mul_pd(m_z,m_cn);
-		m_fac   =  _mm_set1_pd(1.);
+		m_fac   =  _mm_load_pd(f+2);
 		m_cn    =  _mm_add_pd(m_fac,m_cn);
 		_mm_store_pd(cs,m_cn);
 
@@ -186,7 +188,7 @@ static void kepler_step(unsigned int i,double _dt){
 	double zeta0 = M - beta*r0;
 
 	double X, X_min, X_max;
-	double Gs[6] __attribute__((aligned (32))); 
+	double Gs[6] __attribute__((__aligned__(16))); 
 		
 	if (beta>0.){
 		// Elliptic orbit
