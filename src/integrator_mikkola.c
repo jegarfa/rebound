@@ -30,6 +30,7 @@
 #include <math.h>
 #include <time.h>
 #include <sys/time.h>
+#include <xmmintrin.h>
 #include "particle.h"
 #include "main.h"
 #include "tools.h"
@@ -60,7 +61,7 @@ double Mtotal;
 unsigned int integrator_timestep_warning = 0;
 
 // Fast inverse factorial lookup table
-static const double invfactorial[35] = {1., 1., 1./2., 1./6., 1./24., 1./120., 1./720., 1./5040., 1./40320., 1./362880., 1./3628800., 1./39916800., 1./479001600., 1./6227020800., 1./87178291200., 1./1307674368000., 1./20922789888000., 1./355687428096000., 1./6402373705728000., 1./121645100408832000., 1./2432902008176640000., 1./51090942171709440000., 1./1124000727777607680000., 1./25852016738884976640000., 1./620448401733239439360000., 1./15511210043330985984000000., 1./403291461126605635584000000., 1./10888869450418352160768000000., 1./304888344611713860501504000000., 1./8841761993739701954543616000000., 1./265252859812191058636308480000000., 1./8222838654177922817725562880000000., 1./263130836933693530167218012160000000., 1./8683317618811886495518194401280000000., 1./295232799039604140847618609643520000000.};
+static const double invfactorial[35] __attribute__((aligned (16))) = {1./24., 1./120., 1./720., 1./5040., 1./40320., 1./362880., 1./3628800., 1./39916800., 1./479001600., 1./6227020800., 1./87178291200., 1./1307674368000., 1./20922789888000., 1./355687428096000., 1./6402373705728000., 1./121645100408832000., 1./2432902008176640000., 1./51090942171709440000., 1./1124000727777607680000., 1./25852016738884976640000., 1./620448401733239439360000., 1./15511210043330985984000000., 1./403291461126605635584000000., 1./10888869450418352160768000000., 1./304888344611713860501504000000., 1./8841761993739701954543616000000., 1./265252859812191058636308480000000., 1./8222838654177922817725562880000000., 1./263130836933693530167218012160000000., 1./8683317618811886495518194401280000000., 1./295232799039604140847618609643520000000.};
 
 //static double ipow(double base, unsigned int exp) {
 //	double result = 1;
@@ -95,12 +96,47 @@ static double c_n_series(unsigned int n, double z){
 
 static void stumpff_cs(double *restrict cs, double z) {
 	if (z<0.1){
-		cs[5] = c_n_series(5,z);
-		cs[4] = c_n_series(4,z);
-		cs[3] = 1./6.-z*cs[5];
-		cs[2] = 0.5-z*cs[4];
-		cs[1] = 1.-z*cs[3];
-		cs[0] = 1.-z*cs[2];
+		__m128d m_z   =  _mm_set1_pd(-z);
+		__m128d m_cn  =  _mm_load_pd(invfactorial);    
+		
+		__m128d m_fac =  _mm_load_pd(invfactorial+2);    
+		        m_fac =  _mm_mul_pd(m_fac,m_z);
+		        m_cn  =  _mm_add_pd(m_fac,m_cn);
+
+		        m_fac =  _mm_load_pd(invfactorial+4);    
+		__m128d m_pow =  _mm_mul_pd(m_z,m_z);
+		        m_fac =  _mm_mul_pd(m_fac,m_pow);
+		        m_cn  =  _mm_add_pd(m_fac,m_cn);
+		
+		        m_fac =  _mm_load_pd(invfactorial+6);    
+		        m_pow =  _mm_mul_pd(m_pow,m_z);
+		        m_fac =  _mm_mul_pd(m_fac,m_pow);
+		        m_cn  =  _mm_add_pd(m_fac,m_cn);
+		
+		        m_fac =  _mm_load_pd(invfactorial+8);    
+		        m_pow =  _mm_mul_pd(m_pow,m_z);
+		        m_fac =  _mm_mul_pd(m_fac,m_pow);
+		        m_cn  =  _mm_add_pd(m_fac,m_cn);
+		
+		        m_fac =  _mm_load_pd(invfactorial+10);    
+		        m_pow =  _mm_mul_pd(m_pow,m_z);
+		        m_fac =  _mm_mul_pd(m_fac,m_pow);
+		        m_cn  =  _mm_add_pd(m_fac,m_cn);
+
+		_mm_store_pd(cs+4,m_cn);
+		m_cn    =  _mm_mul_pd(m_z,m_cn);
+		m_fac   =  _mm_set_pd(1./6.,0.5);
+		m_cn    =  _mm_add_pd(m_fac,m_cn);
+		_mm_store_pd(cs+2,m_cn);
+		m_cn    =  _mm_mul_pd(m_z,m_cn);
+		m_fac   =  _mm_set1_pd(1.);
+		m_cn    =  _mm_add_pd(m_fac,m_cn);
+		_mm_store_pd(cs,m_cn);
+
+		//cs[3] = 1./6.-z*cs[5];
+		//cs[2] = 0.5-z*cs[4];
+		//cs[1] = 1.-z*cs[3];
+		//cs[0] = 1.-z*cs[2];
 	}else{
 		stumpff_cs(cs, z*0.25);
 		cs[5] = (cs[5]+cs[4]+cs[3]*cs[2])*0.0625;
@@ -150,7 +186,7 @@ static void kepler_step(unsigned int i,double _dt){
 	double zeta0 = M - beta*r0;
 
 	double X, X_min, X_max;
-	double Gs[6]; 
+	double Gs[6] __attribute__((aligned (32))); 
 		
 	if (beta>0.){
 		// Elliptic orbit
