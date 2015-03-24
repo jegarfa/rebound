@@ -235,7 +235,7 @@ static void kepler_step(unsigned int i,double _dt){
 		}
 	}
 	if (converged == 0){ // Fallback to bisection 
-		double X_min, X_max;
+		double a, b;
 		if (beta>0.){
 			//Elliptic
 			double sqrt_beta = sqrt(beta);
@@ -245,28 +245,79 @@ static void kepler_step(unsigned int i,double _dt){
 				integrator_timestep_warning++;
 				fprintf(stderr,"\n\033[1mWarning!\033[0m Timestep is larger than at least one orbital period.\n");
 			}
-			X_min = X_per_period * floor(_dt*invperiod);
-			X_max = X_min + X_per_period;
+			a = X_per_period * floor(_dt*invperiod);
+			b = a + X_per_period;
 		}else{
 			//Hyperbolic
 			double h2 = r0*r0*v2-eta0*eta0;
 			double q = h2/M/(1.+sqrt(1.-h2*beta/(M*M)));
 			double vq = sqrt(h2)/q;
-			X_min = 1./(vq+r0/_dt);
-			X_max = _dt/q;
+			a = 1./(vq+r0/_dt);
+			b = _dt/q;
 		}
-		X = (X_max + X_min)/2.;
+
+		n_hg++;
+		stiefel_Gs3(Gs, beta, a);
+		double Fa   = r0*a + eta0*Gs[2] + zeta0*Gs[3]-_dt; // was s
+		n_hg++;
+		stiefel_Gs3(Gs, beta, b);
+		double Fb   = r0*b + eta0*Gs[2] + zeta0*Gs[3]-_dt; // was s
+		double c = a;
+		double d = 0; // not used on first iteration;
+		double Fc = Fa;
+		double s;
+		double delta = 1e-15;
+		int mflag = 1;
 		do{
-			n_hg++;
-			stiefel_Gs3(Gs, beta, X);
-			double s   = r0*X + eta0*Gs[2] + zeta0*Gs[3]-_dt;
-			if (s>=0.){
-				X_max = X;
+			if (Fa!=Fc && Fb!=Fc){
+				// inverse quadratic interpolation
+				s = a*Fb*Fc/((Fa-Fb)*(Fa-Fc))
+				  + b*Fc*Fa/((Fb-Fa)*(Fb-Fc))
+				  + c*Fa*Fb/((Fc-Fa)*(Fc-Fb));
 			}else{
-				X_min = X;
+				// Secant method
+				s = b-Fb*(b-a)/(Fb-Fa);
 			}
-			X = (X_max + X_min)/2.;
-		}while (fastabs((X_max-X_min)/X_max)>1e-15);
+			if (
+				(s<(3.*a+b)/4. || s>b)
+				||
+				(mflag==1 && fabs(s-b)>=fabs(b-c)/2.)
+				||
+				(mflag==0 && fabs(s-b)>=fabs(c-d)/2.)
+				||
+				(mflag==1 && fabs(b-c)<delta)
+				||
+				(mflag==0 && fabs(c-d)<delta)
+				){
+				// Bisection method
+				s = (a+b)/2.;
+				mflag = 1;
+			}else{
+				mflag = 0;
+			}
+			n_hg++;
+			stiefel_Gs3(Gs, beta, s);
+			double Fs   = r0*s + eta0*Gs[2] + zeta0*Gs[3]-_dt; // was s
+			d = c;
+			c = b;
+			if (Fa*Fs<0.){
+				b=s;
+				Fb = Fs;
+			}else{
+				a=s;
+				Fa = Fs;
+			}
+			if (fabs(Fa)<fabs(Fb)){
+				double temp = a;
+				a=b;
+				b=temp;
+				temp = Fa;
+				Fa = Fb;
+				Fb = temp;
+			}
+		}while (fastabs((b-a)/b)>delta);
+		X = s;
+		stiefel_Gs3(Gs, beta, s);
 		ri          = 1./(r0 + eta0*Gs[1] + zeta0*Gs[2]);
 	}
 	
