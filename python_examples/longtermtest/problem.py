@@ -73,8 +73,8 @@ def simulation(par):
     print integrator + " done."
     return [times, es]
 
-dt = .001
-tmax = 365.*1e2
+dt = .00001
+tmax = 365.*1e-1
 integrators = ["wh","mikkola","ias15"]
     
 parameters = [(i) for i in integrators]

@@ -327,6 +327,160 @@ static void kepler_step(unsigned int i,double _dt){
 
 }
 
+static void kepler_step2(unsigned int i,double _dt){
+	double M = _M(i);
+	struct particle p1 = p_j[i];
+
+	double r0 = sqrt(p1.x*p1.x + p1.y*p1.y + p1.z*p1.z);
+	double r0i = 1./r0;
+	double v2 =  p1.vx*p1.vx + p1.vy*p1.vy + p1.vz*p1.vz;
+	double beta = 2.*M*r0i - v2;
+	double eta0 = p1.x*p1.vx + p1.y*p1.vy + p1.z*p1.vz;
+	double zeta0 = M - beta*r0;
+
+	double X;
+	double Gs[6]; 
+	double sqrt_beta = sqrt(beta);
+	double period = (2.*M_PI*M)/sqrt_beta*beta;
+	_dt = _dt+period;
+		
+	if (beta>0.){
+		// Elliptic orbit
+		//X = _dt*invperiod*X_per_period; // first order guess 
+		double dtr0i = _dt*r0i;
+		//X = dtr0i; // first order guess
+		X = dtr0i * (1. - dtr0i*eta0*0.5*r0i); // second order guess
+		//X = dtr0i *(1.- 0.5*dtr0i*r0i*(eta0-dtr0i*(eta0*eta0*r0i-1./3.*zeta0))); // third order guess
+	}else{
+		// Hyperbolic orbit
+		X = 0.; // Initial guess 
+	}
+
+	unsigned int n_hg;
+	unsigned int converged = 0;
+	double ri;
+	double oldX;
+	for (n_hg=0;n_hg<10;n_hg++){
+		oldX = X;
+		stiefel_Gs3(Gs, beta, X);
+		//double s   = r0*X + eta0*Gs[2] + zeta0*Gs[3]-_dt;
+		const double eta0Gs1zeta0Gs2 = eta0*Gs[1] + zeta0*Gs[2];
+		ri          = 1./(r0 + eta0Gs1zeta0Gs2);
+
+		X = ri*(X*eta0Gs1zeta0Gs2-eta0*Gs[2]-zeta0*Gs[3]+_dt);
+		
+
+		//double dX  = -s*ri; // Newton's method
+		//double spp = eta0*Gs[0] + zeta0*Gs[1];
+		//double dX  = -(s*sp)/(sp*sp-0.5*s*spp); // Householder 2nd order formula
+		//double s1 = r0 + eta0*Gs[1] + zeta0*Gs[2];
+		//double s2 = eta0*Gs[0] + zeta0*Gs[1];
+		//double s3 = -eta0*beta*Gs[1] + zeta0*Gs[0];
+		
+		//ri          = 1./s1; // 1./(r0 + eta0*Gs[1] + zeta0*Gs[2]);
+		//double dX  = -s*ri; // Newton's method
+		//double dX2 = -s/(s1 + 0.5*dX*s2); // Halley's method (3rd order)
+		//double dX3 = -s/(s1 + 0.5*dX2*s2 + dX2*dX2*s3/6.); // 4th order
+		 
+		//X+=dX;
+		//if (X>X_max || X < X_min){
+		//	// Did not converged.
+		//	n_hg=10;
+		//	break;
+		//}
+		//if (fabs((X-oldX))<1e-15*fabs(X)){
+		if (X==oldX){
+			// Converged. Exit.
+			n_hg++;
+			converged = 1;
+			break; 
+		}
+	}
+	if (converged == 0){ // Fallback to bisection 
+		double X_min, X_max;
+		if (beta>0.){
+			//Elliptic
+			double sqrt_beta = sqrt(beta);
+			double invperiod = sqrt_beta*beta/(2.*M_PI*M);
+			double X_per_period = 2.*M_PI/sqrt_beta;
+			if (dt*invperiod>1. && integrator_timestep_warning == 0){
+				integrator_timestep_warning++;
+				fprintf(stderr,"\n\033[1mWarning!\033[0m Timestep is larger than at least one orbital period.\n");
+			}
+			X_min = X_per_period * floor(_dt*invperiod);
+			X_max = X_min + X_per_period;
+		}else{
+			//Hyperbolic
+			double h2 = r0*r0*v2-eta0*eta0;
+			double q = h2/M/(1.+sqrt(1.-h2*beta/(M*M)));
+			double vq = sqrt(h2)/q;
+			X_min = 1./(vq+r0/_dt);
+			X_max = _dt/q;
+		}
+		X = (X_max + X_min)/2.;
+		do{
+			n_hg++;
+			stiefel_Gs3(Gs, beta, X);
+			double s   = r0*X + eta0*Gs[2] + zeta0*Gs[3]-_dt;
+			if (s>=0.){
+				X_max = X;
+			}else{
+				X_min = X;
+			}
+			X = (X_max + X_min)/2.;
+		}while (fastabs((X_max-X_min)/X_max)>1e-15);
+		ri          = 1./(r0 + eta0*Gs[1] + zeta0*Gs[2]);
+	}
+	
+	iter += n_hg;
+
+	double f = 1.-M*Gs[2]*r0i;
+	double g = _dt - M*Gs[3];
+	double fd = -M*Gs[1]*r0i*ri; 
+	double gd = 1.-M*Gs[2]*ri; 
+
+	p_j[i].x = f*p1.x + g*p1.vx;
+	p_j[i].y = f*p1.y + g*p1.vy;
+	p_j[i].z = f*p1.z + g*p1.vz;
+
+	p_j[i].vx = fd*p1.x + gd*p1.vx;
+	p_j[i].vy = fd*p1.y + gd*p1.vy;
+	p_j[i].vz = fd*p1.z + gd*p1.vz;
+
+	//Variations
+	if (N_megno){
+		stiefel_Gs(Gs, beta, X);	// Recalculate (to get Gs[4] and Gs[5])
+		struct particle dp1 = p_j[i+N_megno];
+		double dr0 = (dp1.x*p1.x + dp1.y*p1.y + dp1.z*p1.z)*r0i;
+		double dbeta = -2.*M*dr0*r0i*r0i - 2.* (dp1.vx*p1.vx + dp1.vy*p1.vy + dp1.vz*p1.vz);
+		double deta0 = dp1.x*p1.vx + dp1.y*p1.vy + dp1.z*p1.vz
+			     + p1.x*dp1.vx + p1.y*dp1.vy + p1.z*dp1.vz;
+		double dzeta0 = -beta*dr0 - r0*dbeta;
+		double G3beta = 0.5*(3.*Gs[5]-X*Gs[4]);
+		double G2beta = 0.5*(2.*Gs[4]-X*Gs[3]);
+		double G1beta = 0.5*(Gs[3]-X*Gs[2]);
+		double tbeta = eta0*G2beta + zeta0*G3beta;
+		double dX = -1.*ri*(X*dr0 + Gs[2]*deta0+Gs[3]*dzeta0+tbeta*dbeta);
+		double dG1 = Gs[0]*dX + G1beta*dbeta; 
+		double dG2 = Gs[1]*dX + G2beta*dbeta;
+		double dG3 = Gs[2]*dX + G3beta*dbeta;
+		double dr = dr0 + Gs[1]*deta0 + Gs[2]*dzeta0 + eta0*dG1 + zeta0*dG2;
+		double df = M*Gs[2]*dr0*r0i*r0i - M*dG2*r0i;
+		double dg = -M*dG3;
+		double dfd = -M*dG1*r0i*ri + M*Gs[1]*(dr0*r0i+dr*ri)*r0i*ri;
+		double dgd = -M*dG2*ri + M*Gs[2]*dr*ri*ri;
+	
+		p_j[i+N_megno].x = f*dp1.x + g*dp1.vx + df*p1.x + dg*p1.vx;
+		p_j[i+N_megno].y = f*dp1.y + g*dp1.vy + df*p1.y + dg*p1.vy;
+		p_j[i+N_megno].z = f*dp1.z + g*dp1.vz + df*p1.z + dg*p1.vz;
+
+		p_j[i+N_megno].vx = fd*dp1.x + gd*dp1.vx + dfd*p1.x + dgd*p1.vx;
+		p_j[i+N_megno].vy = fd*dp1.y + gd*dp1.vy + dfd*p1.y + dgd*p1.vy;
+		p_j[i+N_megno].vz = fd*dp1.z + gd*dp1.vz + dfd*p1.z + dgd*p1.vz;
+	}
+
+}
+
 /****************************** 
  * Coordinate transformations */
 
@@ -629,7 +783,18 @@ void integrator_part1(){
 	}
 
 	for (unsigned int i=1;i<N-N_megno;i++){
+		struct particle b = p_j[i];
 		kepler_step(i, dt/2.);
+		struct particle a = p_j[i];
+		p_j[i] = b;
+		kepler_step2(i, dt/2.);
+		p_j[i].x = (p_j[i].x + a.x)/2.;
+		p_j[i].y = (p_j[i].y + a.y)/2.;
+		p_j[i].z = (p_j[i].z + a.z)/2.;
+		p_j[i].vx = (p_j[i].vx + a.vx)/2.;
+		p_j[i].vy = (p_j[i].vy + a.vy)/2.;
+		p_j[i].vz = (p_j[i].vz + a.vz)/2.;
+
 	}
 	p_j[0].x += dt/2.*p_j[0].vx;
 	p_j[0].y += dt/2.*p_j[0].vy;
@@ -662,7 +827,18 @@ void integrator_part2(){
 	integrator_interaction(dt);
 
 	for (unsigned int i=1;i<N-N_megno;i++){
+		struct particle b = p_j[i];
 		kepler_step(i, dt/2.);
+		struct particle a = p_j[i];
+		p_j[i] = b;
+		kepler_step2(i, dt/2.);
+		p_j[i].x = (p_j[i].x + a.x)/2.;
+		p_j[i].y = (p_j[i].y + a.y)/2.;
+		p_j[i].z = (p_j[i].z + a.z)/2.;
+		p_j[i].vx = (p_j[i].vx + a.vx)/2.;
+		p_j[i].vy = (p_j[i].vy + a.vy)/2.;
+		p_j[i].vz = (p_j[i].vz + a.vz)/2.;
+
 	}
 	p_j[0].x += dt/2.*p_j[0].vx;
 	p_j[0].y += dt/2.*p_j[0].vy;
